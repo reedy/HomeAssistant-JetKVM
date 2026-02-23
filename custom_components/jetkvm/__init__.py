@@ -28,12 +28,31 @@ def _build_device_info(entry: ConfigEntry, live_data: dict | None = None) -> dic
     model = live.get("deviceModel") or data.get("model", "JetKVM")
     host = data.get("host", "")
 
-    # Build sw_version from kernel info
+    # Build sw_version from firmware versions (App + System), fall back to kernel
+    app_ver = live.get("app_version") or ""
+    sys_ver = live.get("system_version") or ""
     kernel_version = live.get("kernel_version") or data.get("kernel_version", "")
-    kernel_build = live.get("kernel_build") or data.get("kernel_build", "")
-    sw_version = kernel_version
-    if sw_version and kernel_build:
-        sw_version = f"{sw_version} ({kernel_build})"
+
+    # Filter out "unknown" placeholder values
+    if app_ver.lower() == "unknown":
+        app_ver = ""
+    if sys_ver.lower() == "unknown":
+        sys_ver = ""
+
+    sw_version = ""
+    if app_ver and sys_ver:
+        sw_version = f"App {app_ver} / System {sys_ver}"
+    elif app_ver:
+        sw_version = f"App {app_ver}"
+    elif sys_ver:
+        sw_version = f"System {sys_ver}"
+    elif kernel_version:
+        kernel_build = live.get("kernel_build") or data.get("kernel_build", "")
+        sw_version = kernel_version
+        if kernel_build:
+            sw_version = f"{sw_version} ({kernel_build})"
+
+    hw_version = kernel_version if kernel_version else None
 
     # Identifiers — prefer serial, fall back to entry_id
     identifiers = set()
@@ -61,6 +80,8 @@ def _build_device_info(entry: ConfigEntry, live_data: dict | None = None) -> dic
         info["serial_number"] = serial
     if sw_version:
         info["sw_version"] = sw_version
+    if hw_version:
+        info["hw_version"] = hw_version
 
     return info
 

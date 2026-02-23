@@ -64,6 +64,12 @@ class JetKVMCoordinator(DataUpdateCoordinator):
             if "api_version" in data:
                 result["api_version"] = data["api_version"]
 
+            if "system_version" in data:
+                result["system_version"] = data["system_version"]
+
+            if "app_version" in data:
+                result["app_version"] = data["app_version"]
+
             return result
 
         except JetKVMError as err:

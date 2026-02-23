@@ -46,7 +46,7 @@ async def cgi_device_info(request: web.Request) -> web.Response:
     disk_avail = disk_total - disk_used
     disk_used_pct = round(disk_used / disk_total * 100, 1)
     info = {
-        "api_version": "1.0.0",
+        "api_version": "1.2.0",
         "deviceModel": "JetKVM",
         "serial_number": "18cb28a5431d2479",
         "hostname": "jetkvm-mock",
@@ -55,6 +55,8 @@ async def cgi_device_info(request: web.Request) -> web.Response:
         "network_state": "up",
         "kernel_version": "5.10.160",
         "kernel_build": "#1 Thu Jan 29 12:20:45 CET 2026",
+        "system_version": "0.2.8-dev202601291120",
+        "app_version": "0.5.4-dev202602080922",
         "temperature": temp,
         "uptime_seconds": round(time.monotonic(), 1),
         "load_average": round(random.uniform(0.0, 2.0), 2),

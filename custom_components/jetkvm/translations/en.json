@@ -66,6 +66,12 @@
             },
             "api_version": {
                 "name": "API version"
+            },
+            "app_firmware": {
+                "name": "App firmware"
+            },
+            "system_firmware": {
+                "name": "System firmware"
             }
         },
         "camera": {

@@ -35,7 +35,7 @@ async def h_info(r):
     disk_total = 524288
     disk_used = 200000
     return web.json_response({
-        "api_version": "1.0.0",
+        "api_version": "1.2.0",
         "deviceModel": "JetKVM",
         "serial_number": "18cb28a5431d2479",
         "hostname": "jetkvm-mock",
@@ -44,6 +44,8 @@ async def h_info(r):
         "network_state": "up",
         "kernel_version": "5.10.160",
         "kernel_build": "#1 Thu Jan 29 12:20:45 CET 2026",
+        "system_version": "0.2.8-dev202601291120",
+        "app_version": "0.5.4-dev202602080922",
         "temperature": _temp(),
         "uptime_seconds": round(time.monotonic(), 1),
         "load_average": 0.42,
@@ -126,7 +128,9 @@ async def run_tests():
     ok("has mem_available_kb", "mem_available_kb" in info)
     ok("has disk_used_pct", "disk_used_pct" in info)
     ok("has disk_available_kb", "disk_available_kb" in info)
-    ok("has api_version", info.get("api_version") == "1.0.0", f"got {info.get('api_version')}")
+    ok("has api_version", info.get("api_version") == "1.2.0", f"got {info.get('api_version')}")
+    ok("has system_version", info.get("system_version") == "0.2.8-dev202601291120", f"got {info.get('system_version')}")
+    ok("has app_version", info.get("app_version") == "0.5.4-dev202602080922", f"got {info.get('app_version')}")
 
     # Test 4: get_all_data (used by coordinator)
     print("--- get_all_data ---")
@@ -140,6 +144,8 @@ async def run_tests():
     ok("has disk_used_pct key", "disk_used_pct" in data)
     ok("has disk_available_kb key", "disk_available_kb" in data)
     ok("has api_version key", "api_version" in data)
+    ok("has system_version key", "system_version" in data)
+    ok("has app_version key", "app_version" in data)
 
     # Test 5: validate_connection
     print("--- validate_connection ---")

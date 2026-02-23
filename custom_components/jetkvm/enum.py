@@ -105,4 +105,16 @@ SENSOR_DESCRIPTIONS: List[JetKVMSensorDescription] = [
         icon="mdi:package-up",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    JetKVMSensorDescription(
+        key="app_version",
+        translation_key="app_firmware",
+        icon="mdi:application-cog-outline",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    JetKVMSensorDescription(
+        key="system_version",
+        translation_key="system_firmware",
+        icon="mdi:chip",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 ]

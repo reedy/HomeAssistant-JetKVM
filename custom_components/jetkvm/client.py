@@ -195,9 +195,71 @@ class JetKVMClient:
         """Return device info dict from /device_info."""
         return await self._get_json(DEVICE_INFO_PATH)
 
+    async def get_app_version_from_ws(self) -> str | None:
+        """Connect to the signaling WebSocket and read the App version.
+
+        The JetKVM firmware sends a ``device-metadata`` event immediately
+        upon WebSocket connection to ``/webrtc/signaling/client``.  This
+        contains ``{"data":{"deviceVersion":"..."},"type":"device-metadata"}``.
+
+        Authentication is required.  Returns None on failure.
+        """
+        if not self._password:
+            return None
+
+        try:
+            await self._ensure_authenticated()
+            session = await self._get_native_session()
+            ws_url = self._native_ws_url()
+
+            _LOGGER.debug("JetKVM get_app_version: connecting to %s", ws_url)
+            try:
+                ws = await session.ws_connect(ws_url, timeout=10)
+            except (aiohttp.ClientConnectorError, aiohttp.ClientError, TimeoutError, OSError) as err:
+                _LOGGER.debug("JetKVM get_app_version: WS connect failed: %s", err)
+                return None
+
+            try:
+                # Read up to 5 messages looking for device-metadata
+                for _ in range(5):
+                    msg = await asyncio.wait_for(ws.receive(), timeout=5)
+                    if msg.type != aiohttp.WSMsgType.TEXT:
+                        continue
+                    if msg.data == "pong":
+                        continue
+                    try:
+                        payload = json.loads(msg.data)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if payload.get("type") == "device-metadata":
+                        version = (payload.get("data") or {}).get("deviceVersion")
+                        if version:
+                            _LOGGER.debug("JetKVM get_app_version: got %s", version)
+                            return str(version)
+            except (asyncio.TimeoutError, Exception) as err:
+                _LOGGER.debug("JetKVM get_app_version: error reading WS: %s", err)
+            finally:
+                with contextlib.suppress(Exception):
+                    await ws.close()
+
+        except (JetKVMAuthError, JetKVMError, Exception) as err:
+            _LOGGER.debug("JetKVM get_app_version: failed: %s", err)
+
+        return None
+
     async def get_all_data(self) -> dict:
         """Fetch all data needed by the coordinator."""
-        return await self.get_device_info()
+        data = await self.get_device_info()
+
+        # If the shell script already provides app_version, use it.
+        # Otherwise try the WebSocket device-metadata event.
+        app_ver = data.get("app_version")
+        if not app_ver or app_ver == "unknown":
+            ws_ver = await self.get_app_version_from_ws()
+            if ws_ver:
+                data["app_version"] = ws_ver
+
+        return data
 
     async def validate_connection(self) -> dict:
         """Validate connectivity.  Returns device_info on success."""
