@@ -30,7 +30,7 @@
 #   (or: sh /opt/ha-api/uninstall.sh)
 # =====================================================================
 
-API_VERSION="1.1.1"
+API_VERSION="1.2.0"
 API_PORT=8800
 BASE_DIR="/opt/ha-api"
 VERSION_FILE="${BASE_DIR}/version"
@@ -247,6 +247,30 @@ case "$REQUEST_PATH" in
         KERNEL_VERSION=$(uname -r 2>/dev/null)
         KERNEL_BUILD=$(uname -v 2>/dev/null)
 
+        # JetKVM firmware versions
+        # System version is stored in /version by the JetKVM firmware
+        SYSTEM_VER=$(cat /version 2>/dev/null | tr -d '\n\r')
+        [ -z "$SYSTEM_VER" ] && SYSTEM_VER="unknown"
+
+        # App version: try reading from the running jetkvm_app binary's
+        # embedded version string, or fall back to the WebSocket metadata
+        APP_VER=""
+        # Method 1: strings on the binary (look for semver pattern after "builtAppVersion")
+        if [ -x /usr/bin/jetkvm_app ]; then
+            APP_VER=$(strings /usr/bin/jetkvm_app 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?' | head -1)
+        fi
+        # Method 2: try /userdata/jetkvm/ for version markers
+        if [ -z "$APP_VER" ] && [ -d /userdata/jetkvm ]; then
+            for f in /userdata/jetkvm/app_version /userdata/jetkvm/version; do
+                [ -f "$f" ] && APP_VER=$(cat "$f" 2>/dev/null | tr -d '\n\r') && break
+            done
+        fi
+        # Method 3: query the local Go app's version endpoint
+        if [ -z "$APP_VER" ]; then
+            APP_VER=$(wget -qO- http://127.0.0.1/device/version 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+        fi
+        [ -z "$APP_VER" ] && APP_VER="unknown"
+
         # Network
         IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {split($2,a,"/"); print a[1]; exit}')
         [ -z "$IP" ] && IP=$(ifconfig eth0 2>/dev/null | awk '/inet addr/{split($2,a,":"); print a[2]; exit}')
@@ -309,8 +333,10 @@ case "$REQUEST_PATH" in
         J_KVER=$(json_escape "$KERNEL_VERSION")
         J_KBUILD=$(json_escape "$KERNEL_BUILD")
         J_APIVER=$(json_escape "$API_VER")
+        J_SYSVER=$(json_escape "$SYSTEM_VER")
+        J_APPVER=$(json_escape "$APP_VER")
 
-        BODY="{\"api_version\":\"${J_APIVER}\",\"deviceModel\":\"${J_MODEL}\",\"serial_number\":\"${J_SERIAL}\",\"hostname\":\"${J_HOSTNAME}\",\"ip_address\":\"${J_IP}\",\"mac_address\":\"${J_MAC}\",\"network_state\":\"${J_LINK}\",\"kernel_version\":\"${J_KVER}\",\"kernel_build\":\"${J_KBUILD}\",\"temperature\":${TEMP_INT}.${TEMP_FRAC},\"uptime_seconds\":${UPTIME:-0},\"load_average\":${LOAD_AVG:-0},\"mem_total_kb\":${MEM_TOTAL:-0},\"mem_available_kb\":${MEM_AVAIL:-0},\"mem_used_pct\":${MEM_PCT_INT}.${MEM_PCT_FRAC},\"disk_total_kb\":${DISK_TOTAL_KB:-0},\"disk_used_kb\":${DISK_USED_KB:-0},\"disk_available_kb\":${DISK_AVAIL_KB:-0},\"disk_used_pct\":${DISK_PCT_INT}.${DISK_PCT_FRAC}}"
+        BODY="{\"api_version\":\"${J_APIVER}\",\"deviceModel\":\"${J_MODEL}\",\"serial_number\":\"${J_SERIAL}\",\"hostname\":\"${J_HOSTNAME}\",\"ip_address\":\"${J_IP}\",\"mac_address\":\"${J_MAC}\",\"network_state\":\"${J_LINK}\",\"kernel_version\":\"${J_KVER}\",\"kernel_build\":\"${J_KBUILD}\",\"system_version\":\"${J_SYSVER}\",\"app_version\":\"${J_APPVER}\",\"temperature\":${TEMP_INT}.${TEMP_FRAC},\"uptime_seconds\":${UPTIME:-0},\"load_average\":${LOAD_AVG:-0},\"mem_total_kb\":${MEM_TOTAL:-0},\"mem_available_kb\":${MEM_AVAIL:-0},\"mem_used_pct\":${MEM_PCT_INT}.${MEM_PCT_FRAC},\"disk_total_kb\":${DISK_TOTAL_KB:-0},\"disk_used_kb\":${DISK_USED_KB:-0},\"disk_available_kb\":${DISK_AVAIL_KB:-0},\"disk_used_pct\":${DISK_PCT_INT}.${DISK_PCT_FRAC}}"
         ;;
     *)
         STATUS_CODE=404
