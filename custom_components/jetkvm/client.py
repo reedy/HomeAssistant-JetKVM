@@ -20,6 +20,7 @@ import base64
 import contextlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -34,6 +35,7 @@ DEVICE_INFO_PATH = "/device_info"
 
 NATIVE_PORT = 80
 AUTH_PATH = "/auth/login-local"
+METRICS_PATH = "/metrics"
 WEBRTC_SESSION_PATH = "/webrtc/session"
 WEBRTC_SIGNALING_PATH = "/webrtc/signaling/client"
 
@@ -247,6 +249,102 @@ class JetKVMClient:
 
         return None
 
+    async def get_metrics(self) -> dict:
+        """Scrape select Prometheus metrics from the native API (port 80).
+
+        The JetKVM Go application exposes ``/metrics`` in Prometheus text
+        format.  We parse a small subset of gauges / counters that are
+        useful for Home Assistant sensors and binary sensors.
+
+        Returns a dict with extracted values, or an empty dict on failure.
+        Authentication is required.
+        """
+        if not self._password:
+            return {}
+
+        try:
+            await self._ensure_authenticated()
+            session = await self._get_native_session()
+            url = f"{self._native_url}{METRICS_PATH}"
+
+            _LOGGER.debug("JetKVM metrics: GET %s", url)
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    _LOGGER.debug("JetKVM metrics: HTTP %s", resp.status)
+                    return {}
+                body = await resp.text()
+
+        except (aiohttp.ClientConnectorError, aiohttp.ClientError,
+                TimeoutError, OSError, JetKVMAuthError, JetKVMError) as err:
+            _LOGGER.debug("JetKVM metrics: failed: %s", err)
+            return {}
+
+        result: dict[str, Any] = {}
+
+        # Simple line-by-line parser for the subset we care about.
+        # Prometheus text format: metric_name{labels} value
+        for line in body.splitlines():
+            if line.startswith("#") or not line:
+                continue
+
+            # ---- cloud connection status (gauge, 0 or 1) ----
+            if line.startswith("jetkvm_cloud_connection_status "):
+                try:
+                    result["cloud_connected"] = float(line.split()[-1]) >= 1
+                except (ValueError, IndexError):
+                    pass
+
+            # ---- timesync status (gauge, 0 or 1) ----
+            elif line.startswith("jetkvm_timesync_status "):
+                try:
+                    result["timesync_ok"] = float(line.split()[-1]) >= 1
+                except (ValueError, IndexError):
+                    pass
+
+            # ---- network I/O (bytes) ----
+            elif line.startswith("process_network_receive_bytes_total "):
+                try:
+                    result["net_rx_bytes"] = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif line.startswith("process_network_transmit_bytes_total "):
+                try:
+                    result["net_tx_bytes"] = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+
+            # ---- WoL packets sent ----
+            elif line.startswith("jetkvm_wol_sent_packets_total "):
+                try:
+                    result["wol_packets_sent"] = int(float(line.split()[-1]))
+                except (ValueError, IndexError):
+                    pass
+
+            # ---- active local sessions (count distinct local sources) ----
+            elif line.startswith("jetkvm_connection_session_requests_total{"):
+                # We only care about type="local"
+                if 'type="local"' in line:
+                    try:
+                        result.setdefault("local_sessions_total", 0)
+                        result["local_sessions_total"] += int(float(line.split()[-1]))
+                    except (ValueError, IndexError):
+                        pass
+
+            # ---- build info (extract version, revision, branch) ----
+            elif line.startswith("jetkvm_build_info{"):
+                ver = re.search(r'version="([^"]*)"', line)
+                rev = re.search(r'revision="([^"]*)"', line)
+                branch = re.search(r'branch="([^"]*)"', line)
+                if ver:
+                    result["build_version"] = ver.group(1)
+                if rev:
+                    result["build_revision"] = rev.group(1)
+                if branch:
+                    result["build_branch"] = branch.group(1)
+
+        _LOGGER.debug("JetKVM metrics: extracted %d values", len(result))
+        return result
+
     async def get_all_data(self) -> dict:
         """Fetch all data needed by the coordinator."""
         data = await self.get_device_info()
@@ -258,6 +356,14 @@ class JetKVMClient:
             ws_ver = await self.get_app_version_from_ws()
             if ws_ver:
                 data["app_version"] = ws_ver
+
+        # Merge Prometheus metrics from the native API
+        metrics = await self.get_metrics()
+        if metrics:
+            # Use build_version as authoritative app_version if available
+            if metrics.get("build_version") and (not data.get("app_version") or data["app_version"] == "unknown"):
+                data["app_version"] = metrics["build_version"]
+            data.update({k: v for k, v in metrics.items() if k not in data})
 
         return data
 

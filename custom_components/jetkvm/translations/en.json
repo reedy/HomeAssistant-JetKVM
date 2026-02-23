@@ -72,6 +72,23 @@
             },
             "system_firmware": {
                 "name": "System firmware"
+            },
+            "network_received": {
+                "name": "Network received"
+            },
+            "network_sent": {
+                "name": "Network sent"
+            },
+            "wol_packets_sent": {
+                "name": "WoL packets sent"
+            }
+        },
+        "binary_sensor": {
+            "cloud_connected": {
+                "name": "Cloud connected"
+            },
+            "time_synced": {
+                "name": "Time synced"
             }
         },
         "camera": {

@@ -117,4 +117,32 @@ SENSOR_DESCRIPTIONS: List[JetKVMSensorDescription] = [
         icon="mdi:chip",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # ---- Metrics-based sensors (require password) ----
+    JetKVMSensorDescription(
+        key="net_rx_bytes",
+        translation_key="network_received",
+        icon="mdi:download-network",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        suggested_unit_of_measurement=UnitOfInformation.MEBIBYTES,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    JetKVMSensorDescription(
+        key="net_tx_bytes",
+        translation_key="network_sent",
+        icon="mdi:upload-network",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        suggested_unit_of_measurement=UnitOfInformation.MEBIBYTES,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    JetKVMSensorDescription(
+        key="wol_packets_sent",
+        translation_key="wol_packets_sent",
+        icon="mdi:power",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 ]

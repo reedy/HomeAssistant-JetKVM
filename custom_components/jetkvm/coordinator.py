@@ -70,6 +70,18 @@ class JetKVMCoordinator(DataUpdateCoordinator):
             if "app_version" in data:
                 result["app_version"] = data["app_version"]
 
+            # Prometheus metrics (only present when password is configured)
+            if "cloud_connected" in data:
+                result["cloud_connected"] = data["cloud_connected"]
+            if "timesync_ok" in data:
+                result["timesync_ok"] = data["timesync_ok"]
+            if "net_rx_bytes" in data:
+                result["net_rx_bytes"] = data["net_rx_bytes"]
+            if "net_tx_bytes" in data:
+                result["net_tx_bytes"] = data["net_tx_bytes"]
+            if "wol_packets_sent" in data:
+                result["wol_packets_sent"] = data["wol_packets_sent"]
+
             return result
 
         except JetKVMError as err:
