@@ -1,6 +1,7 @@
 """Config flow for JetKVM integration."""
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import AbortFlow
 import logging
 
 from .const import DOMAIN
@@ -82,6 +83,8 @@ class JetKVMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 title = device_info.get("hostname") or host
                 return self.async_create_entry(title=title, data=entry_data)
 
+            except AbortFlow:
+                raise
             except JetKVMConnectionError as err:
                 _LOGGER.error("JetKVM setup: connection failed: %s", err)
                 errors["base"] = "cannot_connect"
