@@ -12,6 +12,10 @@
 # An auto-updater checks GitHub on a fixed interval (default: hourly)
 # and silently re-installs if a newer version of this script is available.
 #
+# Files are stored on /userdata/ (persistent across reboots).
+# Multiple boot hooks (rc.local, init.d, crontab) ensure the server
+# starts automatically even if one method gets wiped by firmware updates.
+#
 # Usage:
 #   1. SSH into your JetKVM:  ssh root@<jetkvm-ip>
 #   2. Run:
@@ -27,20 +31,23 @@
 #
 # To uninstall:
 #   sh /tmp/api-setup.sh --uninstall
-#   (or: sh /opt/ha-api/uninstall.sh)
+#   (or: sh /userdata/ha-api/uninstall.sh)
 # =====================================================================
 
-API_VERSION="1.2.0"
+API_VERSION="1.3.0"
 API_PORT=8800
-BASE_DIR="/opt/ha-api"
+BASE_DIR="/userdata/ha-api"
+OLD_BASE_DIR="/opt/ha-api"
 VERSION_FILE="${BASE_DIR}/version"
 HANDLER_SCRIPT="${BASE_DIR}/handler.sh"
 WATCHDOG_SCRIPT="${BASE_DIR}/watchdog.sh"
 UPDATER_SCRIPT="${BASE_DIR}/updater.sh"
+STARTUP_SCRIPT="${BASE_DIR}/startup.sh"
 PID_FILE="${BASE_DIR}/watchdog.pid"
 UPDATER_PID_FILE="${BASE_DIR}/updater.pid"
 LOG_FILE="${BASE_DIR}/server.log"
 UNINSTALL_SCRIPT="${BASE_DIR}/uninstall.sh"
+INITD_SCRIPT="/etc/init.d/S99haapi"
 SETUP_URL="https://raw.githubusercontent.com/Poshy163/HomeAssistant-JetKVM/main/api-setup.sh"
 UPDATE_INTERVAL=3600
 
@@ -66,6 +73,10 @@ if [ "$1" = "--uninstall" ]; then
         kill -9 "$UPID" 2>/dev/null
         rm -f "$UPDATER_PID_FILE"
     fi
+    # Also check old location
+    if [ -f "${OLD_BASE_DIR}/updater.pid" ]; then
+        kill "$(cat "${OLD_BASE_DIR}/updater.pid")" 2>/dev/null
+    fi
 
     # Stop watchdog (kills nc children too)
     if [ -f "$PID_FILE" ]; then
@@ -75,21 +86,35 @@ if [ "$1" = "--uninstall" ]; then
         kill -9 "$WPID" 2>/dev/null
         rm -f "$PID_FILE"
     fi
+    # Also check old location
+    if [ -f "${OLD_BASE_DIR}/watchdog.pid" ]; then
+        kill "$(cat "${OLD_BASE_DIR}/watchdog.pid")" 2>/dev/null
+    fi
 
     # Kill anything still on our port
     for p in $(netstat -tlnp 2>/dev/null | grep ":${API_PORT} " | awk '{print $NF}' | cut -d/ -f1); do
         kill "$p" 2>/dev/null
     done
 
-    # Remove files
+    # Remove files (both new and old locations)
     rm -rf "$BASE_DIR"
+    rm -rf "$OLD_BASE_DIR"
+
+    # Remove init.d script
+    rm -f "$INITD_SCRIPT"
 
     # Remove from rc.local (current and legacy entries)
     if [ -f /etc/rc.local ]; then
         sed -i "\|${WATCHDOG_SCRIPT}|d" /etc/rc.local
         sed -i "\|${UPDATER_SCRIPT}|d" /etc/rc.local
-        sed -i "\|/opt/ha-api/server.sh|d" /etc/rc.local
-        sed -i "\|/opt/ha-api/start.sh|d" /etc/rc.local
+        sed -i "\|${STARTUP_SCRIPT}|d" /etc/rc.local
+        sed -i "\|/opt/ha-api/|d" /etc/rc.local
+        sed -i "\|/userdata/ha-api/|d" /etc/rc.local
+    fi
+
+    # Remove crontab entry
+    if command -v crontab >/dev/null 2>&1; then
+        crontab -l 2>/dev/null | grep -v "/userdata/ha-api/" | grep -v "/opt/ha-api/" | crontab - 2>/dev/null
     fi
 
     echo "Done. API server removed."
@@ -103,11 +128,22 @@ echo ""
 # Stop any existing instance
 # =====================================================================
 echo "Stopping any existing instance..."
+
+# When run by the old updater, we're a child of the updater process.
+# Killing the updater would break the pipe and abort our own install.
+# Detect this: if a PID file points to our parent, skip killing it —
+# the old updater exits on its own after we finish.
+SAFE_PPID=$(cat /proc/$$/status 2>/dev/null | awk '/^PPid:/{print $2}')
+# In some shells $PPID is available directly
+[ -z "$SAFE_PPID" ] && SAFE_PPID="$PPID"
+
 if [ -f "$UPDATER_PID_FILE" ]; then
     UPID=$(cat "$UPDATER_PID_FILE")
-    kill "$UPID" 2>/dev/null
-    sleep 1
-    kill -9 "$UPID" 2>/dev/null
+    if [ "$UPID" != "$SAFE_PPID" ]; then
+        kill "$UPID" 2>/dev/null
+        sleep 1
+        kill -9 "$UPID" 2>/dev/null
+    fi
 fi
 if [ -f "$PID_FILE" ]; then
     WPID=$(cat "$PID_FILE")
@@ -115,6 +151,15 @@ if [ -f "$PID_FILE" ]; then
     sleep 1
     kill -9 "$WPID" 2>/dev/null
 fi
+# Stop old instances from /opt/ha-api (previous install location)
+for OLD_PF in "${OLD_BASE_DIR}/updater.pid" "${OLD_BASE_DIR}/watchdog.pid" "${OLD_BASE_DIR}/server.pid"; do
+    if [ -f "$OLD_PF" ]; then
+        OLD_PID=$(cat "$OLD_PF")
+        # Don't kill the updater that's running us
+        [ "$OLD_PID" = "$SAFE_PPID" ] && continue
+        kill "$OLD_PID" 2>/dev/null
+    fi
+done
 # Also stop old server.pid if present
 if [ -f "${BASE_DIR}/server.pid" ]; then
     kill "$(cat "${BASE_DIR}/server.pid")" 2>/dev/null
@@ -126,6 +171,15 @@ done
 # Clean up old files from previous versions
 rm -f "${BASE_DIR}/server.sh" "${BASE_DIR}/fifo" "${BASE_DIR}/server.pid"
 rm -rf "${BASE_DIR}/www" "${BASE_DIR}/config.sh"
+# Clean up old /opt/ha-api installation entirely (migrating to /userdata/ha-api)
+if [ -d "$OLD_BASE_DIR" ]; then
+    echo "Migrating from ${OLD_BASE_DIR} to ${BASE_DIR}..."
+    rm -rf "$OLD_BASE_DIR"
+    # Clean old rc.local entries
+    if [ -f /etc/rc.local ]; then
+        sed -i "\|/opt/ha-api/|d" /etc/rc.local
+    fi
+fi
 sleep 1
 
 # =====================================================================
@@ -222,14 +276,14 @@ case "$REQUEST_PATH" in
         fi
         ;;
     /version)
-        API_VER=$(cat /opt/ha-api/version 2>/dev/null)
+        API_VER=$(cat /userdata/ha-api/version 2>/dev/null)
         [ -z "$API_VER" ] && API_VER="unknown"
         J_APIVER=$(json_escape "$API_VER")
         BODY="{\"api_version\":\"${J_APIVER}\"}"
         ;;
     /device_info)
         # API version
-        API_VER=$(cat /opt/ha-api/version 2>/dev/null)
+        API_VER=$(cat /userdata/ha-api/version 2>/dev/null)
         [ -z "$API_VER" ] && API_VER="unknown"
 
         # Temperature
@@ -450,36 +504,43 @@ WATCHDOG
 chmod +x "$WATCHDOG_SCRIPT"
 
 # =====================================================================
-# Uninstall helper
+# Uninstall helper (stored on device)
 # =====================================================================
 cat << 'UNINST' > "$UNINSTALL_SCRIPT"
 #!/bin/sh
 API_PORT=8800
-BASE_DIR="/opt/ha-api"
+BASE_DIR="/userdata/ha-api"
+OLD_BASE_DIR="/opt/ha-api"
 PID_FILE="${BASE_DIR}/watchdog.pid"
 UPDATER_PID_FILE="${BASE_DIR}/updater.pid"
-WATCHDOG_SCRIPT="${BASE_DIR}/watchdog.sh"
-UPDATER_SCRIPT="${BASE_DIR}/updater.sh"
+STARTUP_SCRIPT="${BASE_DIR}/startup.sh"
+INITD_SCRIPT="/etc/init.d/S99haapi"
 
-if [ -f "$UPDATER_PID_FILE" ]; then
-    kill $(cat "$UPDATER_PID_FILE") 2>/dev/null
-    sleep 1
-    kill -9 $(cat "$UPDATER_PID_FILE") 2>/dev/null
-fi
-if [ -f "$PID_FILE" ]; then
-    kill $(cat "$PID_FILE") 2>/dev/null
-    sleep 1
-    kill -9 $(cat "$PID_FILE") 2>/dev/null
-fi
+# Stop processes
+for PFILE in "$UPDATER_PID_FILE" "$PID_FILE" \
+             "${OLD_BASE_DIR}/updater.pid" "${OLD_BASE_DIR}/watchdog.pid"; do
+    if [ -f "$PFILE" ]; then
+        kill $(cat "$PFILE") 2>/dev/null
+        sleep 1
+        kill -9 $(cat "$PFILE") 2>/dev/null
+    fi
+done
 for p in $(netstat -tlnp 2>/dev/null | grep ":${API_PORT} " | awk '{print $NF}' | cut -d/ -f1); do
     kill "$p" 2>/dev/null
 done
+
+# Remove files
 rm -rf "$BASE_DIR"
+rm -rf "$OLD_BASE_DIR"
+rm -f "$INITD_SCRIPT"
+
+# Remove boot entries
 if [ -f /etc/rc.local ]; then
-    sed -i "\|${WATCHDOG_SCRIPT}|d" /etc/rc.local
-    sed -i "\|${UPDATER_SCRIPT}|d" /etc/rc.local
-    sed -i "\|/opt/ha-api/server.sh|d" /etc/rc.local
-    sed -i "\|/opt/ha-api/start.sh|d" /etc/rc.local
+    sed -i "\|/userdata/ha-api/|d" /etc/rc.local
+    sed -i "\|/opt/ha-api/|d" /etc/rc.local
+fi
+if command -v crontab >/dev/null 2>&1; then
+    crontab -l 2>/dev/null | grep -v "/userdata/ha-api/" | grep -v "/opt/ha-api/" | crontab - 2>/dev/null
 fi
 echo "Uninstalled."
 UNINST
@@ -589,24 +650,188 @@ UPDATER
 chmod +x "$UPDATER_SCRIPT"
 
 # =====================================================================
-# Persist across reboots via /etc/rc.local
+# Startup script — self-contained boot entry point
+# Re-injects boot hooks (rc.local, init.d, crontab) on every run
+# so even if the root filesystem is volatile, persistence is restored.
 # =====================================================================
+cat << 'STARTUP' > "$STARTUP_SCRIPT"
+#!/bin/sh
+# JetKVM HA API Startup — called on boot or manually.
+# Re-creates boot hooks (in case rootfs is volatile) then starts services.
+
+BASE_DIR="/userdata/ha-api"
+WATCHDOG_SCRIPT="${BASE_DIR}/watchdog.sh"
+UPDATER_SCRIPT="${BASE_DIR}/updater.sh"
+PID_FILE="${BASE_DIR}/watchdog.pid"
+UPDATER_PID_FILE="${BASE_DIR}/updater.pid"
+INITD_SCRIPT="/etc/init.d/S99haapi"
+LOG_FILE="${BASE_DIR}/server.log"
+
+log() {
+    if [ -f "$LOG_FILE" ]; then
+        LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+        if [ "$LOG_SIZE" -gt 50000 ]; then
+            tail -c 25000 "$LOG_FILE" > "${LOG_FILE}.tmp"
+            mv "${LOG_FILE}.tmp" "$LOG_FILE"
+        fi
+    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [startup] $1" >> "$LOG_FILE"
+}
+
+# Ensure our scripts exist
+if [ ! -x "$WATCHDOG_SCRIPT" ] || [ ! -x "$UPDATER_SCRIPT" ]; then
+    log "ERROR: Missing scripts in $BASE_DIR — reinstall required"
+    exit 1
+fi
+
+# ---- Re-inject boot hooks (idempotent) ----
+
+# 1. /etc/rc.local
+if [ -d /etc ]; then
+    if [ ! -f /etc/rc.local ]; then
+        printf '#!/bin/sh\nexit 0\n' > /etc/rc.local
+        chmod +x /etc/rc.local
+    fi
+    if ! grep -q "/userdata/ha-api/startup.sh" /etc/rc.local 2>/dev/null; then
+        # Remove any stale entries first
+        sed -i "\|/userdata/ha-api/|d" /etc/rc.local 2>/dev/null
+        sed -i "\|/opt/ha-api/|d" /etc/rc.local 2>/dev/null
+        # Insert before 'exit 0' if present, else append
+        if grep -q "^exit 0" /etc/rc.local; then
+            sed -i "/^exit 0/i (sleep 3 && /userdata/ha-api/startup.sh </dev/null >/dev/null 2>&1 &)" /etc/rc.local
+        else
+            echo "(sleep 3 && /userdata/ha-api/startup.sh </dev/null >/dev/null 2>&1 &)" >> /etc/rc.local
+        fi
+        log "Re-injected /etc/rc.local boot hook"
+    fi
+fi
+
+# 2. /etc/init.d/S99haapi (BusyBox init / sysvinit)
+if [ -d /etc/init.d ]; then
+    cat > "$INITD_SCRIPT" << 'INITEOF'
+#!/bin/sh
+case "$1" in
+    start)
+        if [ -x /userdata/ha-api/startup.sh ]; then
+            /userdata/ha-api/startup.sh </dev/null >/dev/null 2>&1 &
+        fi
+        ;;
+    stop)
+        for PFILE in /userdata/ha-api/watchdog.pid /userdata/ha-api/updater.pid; do
+            [ -f "$PFILE" ] && kill $(cat "$PFILE") 2>/dev/null
+        done
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+esac
+INITEOF
+    chmod +x "$INITD_SCRIPT"
+    log "Re-injected /etc/init.d/S99haapi boot hook"
+fi
+
+# 3. Crontab @reboot (if cron is available)
+if command -v crontab >/dev/null 2>&1; then
+    EXISTING_CRON=$(crontab -l 2>/dev/null || true)
+    if ! echo "$EXISTING_CRON" | grep -q "/userdata/ha-api/startup.sh"; then
+        # Remove old entries and add new one
+        CLEAN_CRON=$(echo "$EXISTING_CRON" | grep -v "/userdata/ha-api/" | grep -v "/opt/ha-api/")
+        printf '%s\n@reboot sleep 5 && /userdata/ha-api/startup.sh >/dev/null 2>&1\n' "$CLEAN_CRON" | crontab - 2>/dev/null
+        log "Re-injected crontab @reboot boot hook"
+    fi
+fi
+
+# ---- Check if already running ----
+ALREADY_RUNNING=0
+if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    ALREADY_RUNNING=1
+fi
+
+if [ "$ALREADY_RUNNING" = "1" ]; then
+    log "Watchdog already running (PID $(cat "$PID_FILE")) — skipping start"
+    exit 0
+fi
+
+# ---- Start services ----
+log "Starting watchdog and updater..."
+setsid "$WATCHDOG_SCRIPT" </dev/null >/dev/null 2>&1 &
+setsid "$UPDATER_SCRIPT" </dev/null >/dev/null 2>&1 &
+log "Services started"
+STARTUP
+chmod +x "$STARTUP_SCRIPT"
+
+# =====================================================================
+# Install boot hooks (using the startup script)
+# =====================================================================
+echo ""
+echo "Installing boot persistence hooks..."
+
+# Run the startup script's hook-injection logic now (it's idempotent)
+# But don't start services yet (we do that below with verification)
+
+# 1. /etc/rc.local
 if [ ! -f /etc/rc.local ]; then
     printf '#!/bin/sh\nexit 0\n' > /etc/rc.local
     chmod +x /etc/rc.local
 fi
+# Remove ALL old entries
+sed -i "\|/opt/ha-api/|d" /etc/rc.local 2>/dev/null
+sed -i "\|/userdata/ha-api/|d" /etc/rc.local 2>/dev/null
+# Add single startup entry
+if grep -q "^exit 0" /etc/rc.local; then
+    sed -i "/^exit 0/i (sleep 3 && ${STARTUP_SCRIPT} </dev/null >/dev/null 2>&1 &)" /etc/rc.local
+else
+    echo "(sleep 3 && ${STARTUP_SCRIPT} </dev/null >/dev/null 2>&1 &)" >> /etc/rc.local
+fi
+echo "  [OK] /etc/rc.local"
 
-# Remove old entries
-sed -i "\|/opt/ha-api/server.sh|d" /etc/rc.local
-sed -i "\|/opt/ha-api/start.sh|d" /etc/rc.local
-sed -i "\|${WATCHDOG_SCRIPT}|d" /etc/rc.local
-sed -i "\|${UPDATER_SCRIPT}|d" /etc/rc.local
+# 2. /etc/init.d/S99haapi
+if [ -d /etc/init.d ]; then
+    cat > "$INITD_SCRIPT" << 'INITEOF'
+#!/bin/sh
+case "$1" in
+    start)
+        if [ -x /userdata/ha-api/startup.sh ]; then
+            /userdata/ha-api/startup.sh </dev/null >/dev/null 2>&1 &
+        fi
+        ;;
+    stop)
+        for PFILE in /userdata/ha-api/watchdog.pid /userdata/ha-api/updater.pid; do
+            [ -f "$PFILE" ] && kill $(cat "$PFILE") 2>/dev/null
+        done
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+esac
+INITEOF
+    chmod +x "$INITD_SCRIPT"
+    echo "  [OK] /etc/init.d/S99haapi"
+else
+    echo "  [--] /etc/init.d/ not found (skipped)"
+fi
 
-# Add watchdog with setsid (fully detached from terminal)
-sed -i "/^exit 0/i (sleep 3 && setsid ${WATCHDOG_SCRIPT} </dev/null >/dev/null 2>&1 &)" /etc/rc.local
+# 3. Crontab @reboot
+if command -v crontab >/dev/null 2>&1; then
+    EXISTING_CRON=$(crontab -l 2>/dev/null || true)
+    CLEAN_CRON=$(echo "$EXISTING_CRON" | grep -v "/userdata/ha-api/" | grep -v "/opt/ha-api/")
+    printf '%s\n@reboot sleep 5 && /userdata/ha-api/startup.sh >/dev/null 2>&1\n' "$CLEAN_CRON" | crontab - 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "  [OK] crontab @reboot"
+    else
+        echo "  [--] crontab not available (skipped)"
+    fi
+else
+    echo "  [--] crontab not available (skipped)"
+fi
 
-# Add auto-updater with setsid (fully detached from terminal)
-sed -i "/^exit 0/i (sleep 10 && setsid ${UPDATER_SCRIPT} </dev/null >/dev/null 2>&1 &)" /etc/rc.local
+echo ""
+echo "Boot hooks installed. The startup script will re-inject these"
+echo "on every boot in case the root filesystem is volatile."
 
 # =====================================================================
 # Start the server now
@@ -639,6 +864,7 @@ if [ "$RUNNING" = "1" ]; then
     echo "=== Setup Complete ==="
     echo ""
     echo "API server is running on port ${API_PORT}"
+    echo "Files stored in: ${BASE_DIR} (persistent across reboots)"
     if [ -f "$PID_FILE" ]; then
         echo "Watchdog PID: $(cat "$PID_FILE")"
     fi
@@ -652,7 +878,8 @@ if [ "$RUNNING" = "1" ]; then
     echo "The server will:"
     echo "  - Automatically restart after each request (nc is single-shot)"
     echo "  - Survive SSH session disconnect"
-    echo "  - Start automatically on boot"
+    echo "  - Start automatically on boot (via rc.local + init.d + crontab)"
+    echo "  - Re-inject boot hooks on each startup (survives rootfs resets)"
     echo "  - Timeout idle connections after 5 seconds"
     echo "  - Auto-update from GitHub every ${UPDATE_INTERVAL} seconds"
     echo ""
