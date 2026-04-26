@@ -49,6 +49,8 @@ You should see:
 
 #### HACS (Recommended)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Poshy163&repository=HomeAssistant-JetKVM&category=Integration)
+
 1. Open HACS → **Integrations** → **⋮** → **Custom repositories**
 2. Add `https://github.com/Poshy163/HomeAssistant-JetKVM` as **Integration**
 3. Install and restart Home Assistant
